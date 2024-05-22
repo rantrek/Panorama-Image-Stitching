@@ -7,7 +7,7 @@ class Stitcher:
       
 	def __init__(self):
 		return
-
+	
 	def loadAndResize(self,path):
 		image = cv2.imread(path)
 		image = imutils.resize(image, width=400)
@@ -16,105 +16,92 @@ class Stitcher:
 	def convertToGrayscale(self,image):
 		gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 		return gray
-            
-	def stitch(self,images, ratio=0.75, reprojThresh=4.0, showMatches=False):
-	    # unpack the images, then detect keypoints and extract
-		# local invariant descriptors from them
-		(imageB, imageA) = images
-		grayA = self.convertToGrayscale(imageA)
-		grayB = self.convertToGrayscale(imageB)
-		(kpsA, featuresA) = self.detectAndDescribe(grayA)
-		(kpsB, featuresB) = self.detectAndDescribe(grayB)
-		# match features between the two images
-		M = self.matchKeypoints(kpsA, kpsB,featuresA, featuresB, ratio, reprojThresh)
-		# if the match is None, then there aren't enough matched
-		# keypoints to create a panorama
-		if M is None:
-			return None
-		# otherwise, apply a perspective warp to stitch the images
-		# together
-		(matches, H, status) = M
-		result = self.warp_images(imageA,imageB,H)
-		# check to see if the keypoint matches should be visualized
-		if showMatches:
-			vis = self.drawMatches(imageA, imageB, kpsA, kpsB, matches,status)
-			# return a tuple of the stitched image and the
-			# visualization
-			return (result, vis)
-		# return the stitched image
-		return result
-         
 	
-	def detectAndDescribe(self, image):
-		
-		# detect and extract features from the image
-		descriptor = cv2.ORB_create() #or cv2.SIFT_create()
+	def detectFeatures(self,image, detector = "ORB"):
+		if detector == "ORB":
+			descriptor = cv2.ORB_create()
+		elif detector == "SIFT":
+			descriptor = cv2.SIFT_create()
+
 		(kps, features) = descriptor.detectAndCompute(image, None)
 		
-		# convert the keypoints from KeyPoint objects to NumPy
-		# arrays
-		kps = np.float32([kp.pt for kp in kps])
+        # showing the images with their key points finded by the detector
+		key_image = cv2.drawKeypoints(image,kps,None)
+		cv2.imshow("Keypoints of Image: ",key_image)
+		cv2.waitKey()
+
+        #Print list of descriptors and their shape       
+		print(f'Descriptors of Image {features}')
+		print('------------------------------')
+		print(f'Shape of descriptor of image {features.shape}')
+
 		# return a tuple of keypoints and features
 		return (kps, features)
-
-	def matchKeypoints(self, kpsA, kpsB, featuresA, featuresB, ratio, reprojThresh):
-		# compute the raw matches and initialize the list of actual
-		# matches
-		matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-		rawMatches = matcher.knnMatch(featuresA, featuresB, 2)
-		matches = []
-		# loop over the raw matches
-		for m in rawMatches:
-			# ensure the distance is within a certain ratio of each
-			# other (i.e. Lowe's ratio test)
-			if len(m) == 2 and m[0].distance < m[1].distance * ratio:
-				matches.append((m[0].trainIdx, m[0].queryIdx))
-				# computing a homography requires at least 4 matches
-		if len(matches) > 4:
-			H,status = self.estimate_homography(kpsA,kpsB,matches,reprojThresh)
-			# return the matches along with the homograpy matrix
-			# and status of each matched point
-			return (matches, H, status)
-		# otherwise, no homograpy could be computed
-		return None
 	
-	def estimate_homography(self,kps1, kps2, matches, threshold=3):
+	def matchFeatures(self, feature1, feature2, detector = "ORB"):
+		if detector == "ORB":
+			matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+			raw_matches = matcher.match(feature1,feature2)
+			matches = sorted(raw_matches, key=lambda x: x.distance)
+		elif detector =="SIFT":
+			matcher = cv2.BFMatcher()
+			raw_matches = matcher.knnMatch(feature1,feature2,k=2)
+			ratio = 0.75 #Lowe's ratio
+			matches = []
+			for m, n in raw_matches:
+				if m.distance < ratio * n.distance:
+					matches.append(m)
+		return matches
+	
+	def estimate_homography(self,kps1, kps2, matches, threshold=5):
 		# construct the two sets of points
 	    # compute the homography between the two sets of points
-		src_pts = np.float32([kps1[i] for (_, i) in matches])
-		dst_pts = np.float32([kps2[i] for (i, _) in matches])
-		H, status = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, threshold)
+		src_pts = np.float32([kps1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+		dst_pts = np.float32([kps2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+		H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, threshold)
 		
-		return (H,status)
+		return H
 	
 	def warp_images(self,img1, img2, H):
-		warped_img = cv2.warpPerspective(img1, H,(img1.shape[1] + img2.shape[1], img1.shape[0]))
+		warped_img = cv2.warpPerspective(img1, H,(img1.shape[1]+img2.shape[1], img1.shape[0]))
 		warped_img[0:img2.shape[0], 0:img2.shape[1]] = img2
 		
 		return warped_img
 	
-	def drawMatches(self, imageA, imageB, kpsA, kpsB, matches, status):
-		# initialize the output visualization image
-		(hA, wA) = imageA.shape[:2]
-		(hB, wB) = imageB.shape[:2]
-		vis = np.zeros((max(hA, hB), wA + wB, 3), dtype="uint8")
-		vis[0:hA, 0:wA] = imageA
-		vis[0:hB, wA:] = imageB
-		# loop over the matches
-		for ((trainIdx, queryIdx), s) in zip(matches, status):
-			# only process the match if the keypoint was successfully
-			# matched
-			if s == 1:
-				# draw the match
-				ptA = (int(kpsA[queryIdx][0]), int(kpsA[queryIdx][1]))
-				ptB = (int(kpsB[trainIdx][0]) + wA, int(kpsB[trainIdx][1]))
-				cv2.line(vis, ptA, ptB, (0, 255, 0), 1)
-		# return the visualization
-		return vis
+	def stitch(self,images,detector = "ORB", showMatches = False):
+	    # unpack the images, then detect keypoints and extract
+		# local invariant descriptors from them
+		(image2, image1) = images
+		gray1 = self.convertToGrayscale(image1)
+		gray2 = self.convertToGrayscale(image2)
+		(kps1, features1) = self.detectFeatures(gray1, detector)
+		(kps2, features2) = self.detectFeatures(gray2, detector)
+		# match features between the two images
+		M = self.matchFeatures(features1, features2, detector)
+		
+		# if the match is None, then there aren't enough matched keypoints to create a panorama
+		if M is None:
+			return None
+		# otherwise, estimate homography and apply a perspective warp to stitch the images together
+		
+		H = self.estimate_homography(kps1, kps2, M)
+		result = self.warp_images(image1, image2, H)
 	
-    
+		# check to see if the keypoint matches should be visualized
+		if showMatches:
+			if detector == "ORB":
+				vis = cv2.drawMatches(image1,kps1,image2,kps2,M,None,flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+			elif detector =="SIFT":
+				vis = cv2.drawMatchesKnn(image1, kps1, image2, kps2, [M], None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+			# return a tuple of the stitched image and the visualization
+			return (result, vis)
+		# return the stitched image
+		return result
+		
 	
+
+		
+		
+		
     
 
-    
-   

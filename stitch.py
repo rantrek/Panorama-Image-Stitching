@@ -12,7 +12,7 @@ imageA = pano.loadAndResize(pathA)
 imageB = pano.loadAndResize(pathB)
 
 
-result,vis= pano.stitch([imageA, imageB],showMatches=True)
+result,vis= pano.stitch([imageA, imageB],"SIFT", showMatches = True)
 
 # show the images
 cv2.imshow("Image A", imageA)
